@@ -3,6 +3,7 @@ from typing import List
 
 import jax
 import jax.numpy as jnp
+from jax.lax.linalg import EighImplementation
 
 
 from src.cans_iteration import cans_iteration
@@ -15,35 +16,39 @@ from src.cans_iteration import cans_iteration
         "degree",
         "preprocess",
         "preprocess_iters",
+        "delta",
+        "a",
         "eigh_impl",
-        "tol",
+        "cans_tol",
+        "eps_qr",
     ],
 )
 def cans_svd(
     matrix: jnp.array,
+    max_iter: int = 50,
     degree: int = 3,
     preprocess: bool = True,
     preprocess_iters: int = 2,
     delta: float = 0.99,
     a: float = 0,
-    max_iter: int = 50,
-    eigh_impl=None,
-    tol=1e-5,
+    eigh_impl: EighImplementation | None = None,
+    cans_tol: float = 1e-5,
+    eps_qr: float = 1e-5,
 ) -> List[jnp.array]:
     """
     Compute the SVD of a matrix using the CANS method.
 
     Args:
         matrix (jnp.array): The input matrix.
+        max_iter (int): Number of iterations for the CANS method.
         degree (int): The degree of the polynomial approximation.
         preprocess (bool): Whether to use preprocessing.
         preprocess_iters (int): Number of preprocessing iterations.
         delta (float): The delta parameter for CANS.
         a (float): The scaling parameter for CANS.
-        max_iter (int): Number of iterations for the CANS method.
         eigh_impl (EighImplementation): Algorithm for finding eigh in JAX.
-        tol (float): Tolerance for CANS algorithm.
-
+        cans_tol (float): Tolerance for CANS algorithm.
+        eps_qr (float): Tolerance for checking rank deficient cases.
     Returns:
         U: jnp.array: Left singular vectors.
         S: jnp.array: Singular values.
@@ -60,24 +65,35 @@ def cans_svd(
         preprocess=preprocess,
         preprocess_iters=preprocess_iters,
         delta=delta,
-        tol=tol,
+        tol=cans_tol,
     )
 
     H = W.T @ matrix
-    V, S = jax.lax.linalg.eigh(
+    V, s = jax.lax.linalg.eigh(
         H,
         symmetrize_input=True,
         implementation=eigh_impl,
     )
     U = W @ V
-    U, R = jax.lax.linalg.qr(
-        U,
-        full_matrices=True,
-    )
+
+    # reverse the order of singular values and corresponding singular vectors
+    U = U[:, jnp.arange(U.shape[-1] - 1, -1, -1)]
+    V = V[:, jnp.arange(V.shape[-1] - 1, -1, -1)]
+    s = s[jnp.arange(s.shape[-1] - 1, -1, -1)]
 
     # this implementation of QR decomposition can change sign of columns of U,
     # so we need to fix that to ensure singular values are positive
-    s = jnp.diag(R) * S
+    def perform_qr(U, s):
+        U, R = jax.lax.linalg.qr(U, full_matrices=False)
+        s = jnp.diag(R) * s
+        return U, s
+    U, s = jax.lax.cond(
+        jnp.any(jax.lax.abs(jnp.linalg.norm(U, axis=0) - 1) > eps_qr),
+        perform_qr,
+        lambda U, s: (U, s),
+        U,
+        s,
+    )
     V = jnp.where(s < 0, -V, V)
     s = jnp.abs(s)
     idx = jnp.argsort(s, descending=True)

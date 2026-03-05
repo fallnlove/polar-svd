@@ -73,7 +73,7 @@ def cans_iteration(
     a=1e-8,
     degree=3,
     preprocess=True,
-    preprocess_iters=4,
+    preprocess_iters=2,
     delta=0.99,
     tol=1e-5,
 ):
